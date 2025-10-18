@@ -4,8 +4,8 @@ df = pd.read_csv("data/wildfire_aqi_dataset.csv")
 
 smoke_to_float = {
     "none": 0.0,
-    "light": 1.0,
-    "medium": 1.0,
+    "light": 0.33,
+    "medium": 0.66,
     "heavy": 1.0,
 }
 
