@@ -1,103 +1,596 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import { useEffect, useMemo, useState } from "react";
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
+import {
+  HOURLY_METRIC_FIELDS,
+  type AirQualityRecord,
+  type HourlyAverages,
+  type HourlyMetricKey,
+} from "@/types/airQuality";
+import {
+  FireHeatmap,
+  type HeatmapPoint,
+} from "@/components/FireHeatmap";
+
+const METRIC_COLORS: Record<HourlyMetricKey, string> = {
+  pm25: "#ef4444",
+  pm10: "#f97316",
+  aqi: "#22c55e",
+  temperature_f: "#3b82f6",
+  humidity_percent: "#6366f1",
+  wind_speed_mph: "#14b8a6",
+  no2_ppb: "#ec4899",
+  o3_ppb: "#8b5cf6",
+  co_ppm: "#facc15",
+};
+
+const DEFAULT_METRICS: HourlyMetricKey[] = [
+  "pm25",
+  "pm10",
+  "aqi",
+  "temperature_f",
+];
+
+const MODEL_KEYS: HourlyMetricKey[] = HOURLY_METRIC_FIELDS.map(
+  (field) => field.key,
+);
+
+interface AirQualityApiResponse {
+  hourly: HourlyAverages[];
+  rows: AirQualityRecord[];
+}
+
+type CopyStatus = "idle" | "success" | "error";
+
+function buildModelPayload(row: AirQualityRecord) {
+  const payloadRecord: Record<string, number> = {};
+  for (const key of MODEL_KEYS) {
+    payloadRecord[key] = Number(row[key]);
+  }
+  return { df_in: [payloadRecord] };
+}
+
+function formatNumber(value: number) {
+  if (Number.isNaN(value)) {
+    return "—";
+  }
+
+  if (Math.abs(value) >= 100) {
+    return value.toFixed(0);
+  }
+
+  return value.toFixed(1);
+}
+
+function formatPercent(value: number) {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+const TABLE_COLUMNS: Array<{
+  key: keyof AirQualityRecord | HourlyMetricKey;
+  label: string;
+  isNumeric?: boolean;
+}> = [
+  { key: "timestamp", label: "Timestamp" },
+  { key: "sensor_name", label: "Sensor" },
+  { key: "pm25", label: "PM2.5", isNumeric: true },
+  { key: "pm10", label: "PM10", isNumeric: true },
+  { key: "aqi", label: "AQI", isNumeric: true },
+  { key: "temperature_f", label: "Temp (°F)", isNumeric: true },
+  { key: "humidity_percent", label: "Humidity (%)", isNumeric: true },
+  { key: "wind_speed_mph", label: "Wind (mph)", isNumeric: true },
+  { key: "no2_ppb", label: "NO₂ (ppb)", isNumeric: true },
+  { key: "o3_ppb", label: "O₃ (ppb)", isNumeric: true },
+  { key: "co_ppm", label: "CO (ppm)", isNumeric: true },
+  { key: "fire_event_active", label: "Fire Active" },
+];
+
+export default function DashboardPage() {
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
+  const [selectedDate, setSelectedDate] = useState<string>("");
+  const [hourlyData, setHourlyData] = useState<HourlyAverages[]>([]);
+  const [rows, setRows] = useState<AirQualityRecord[]>([]);
+  const [selectedRow, setSelectedRow] = useState<AirQualityRecord | null>(null);
+  const [selectedMetrics, setSelectedMetrics] =
+    useState<HourlyMetricKey[]>(DEFAULT_METRICS);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<CopyStatus>("idle");
+  const [modelOutputText, setModelOutputText] = useState("");
+  const [modelOutputError, setModelOutputError] = useState<string | null>(null);
+  const [predictionPercent, setPredictionPercent] = useState<number | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadDates() {
+      try {
+        const response = await fetch("/api/air-quality/dates");
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`);
+        }
+
+        const data = (await response.json()) as { dates?: string[] };
+        if (!isMounted) {
+          return;
+        }
+
+        const dates = data.dates ?? [];
+        setAvailableDates(dates);
+
+        if (dates.length > 0) {
+          setSelectedDate((current) => current || dates[dates.length - 1]);
+        }
+      } catch (fetchError) {
+        console.error(fetchError);
+        if (isMounted) {
+          setError("Unable to load available dates right now.");
+        }
+      }
+    }
+
+    loadDates();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedDate) {
+      setHourlyData([]);
+      setRows([]);
+      setSelectedRow(null);
+      return;
+    }
+
+    let isMounted = true;
+    const controller = new AbortController();
+
+    async function loadDataForDate(date: string) {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const response = await fetch(
+          `/api/air-quality/by-date?date=${encodeURIComponent(date)}`,
+          { signal: controller.signal },
+        );
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`);
+        }
+
+        const data = (await response.json()) as AirQualityApiResponse;
+        if (!isMounted) {
+          return;
+        }
+
+        setHourlyData(data.hourly);
+        setRows(data.rows);
+        setSelectedRow((current) => current ?? data.rows[0] ?? null);
+      } catch (fetchError) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        console.error(fetchError);
+        if (isMounted) {
+          setError("Unable to load air quality data for that date.");
+          setHourlyData([]);
+          setRows([]);
+          setSelectedRow(null);
+        }
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadDataForDate(selectedDate);
+
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
+  }, [selectedDate]);
+
+  useEffect(() => {
+    if (!modelOutputText.trim()) {
+      setPredictionPercent(null);
+      setModelOutputError(null);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(modelOutputText) as {
+        df_out?: Array<Record<string, unknown>>;
+      };
+
+      const firstRow = parsed.df_out?.[0] ?? null;
+      const predictionValue =
+        firstRow && typeof firstRow.Prediction === "number"
+          ? firstRow.Prediction
+          : typeof firstRow?.Prediction === "string"
+            ? Number.parseFloat(firstRow.Prediction)
+            : NaN;
+
+      if (firstRow == null || Number.isNaN(predictionValue)) {
+        setPredictionPercent(null);
+        setModelOutputError(
+          "Could not find a numeric Prediction value in df_out.",
+        );
+        return;
+      }
+
+      const normalized = Math.min(Math.max(predictionValue, 0), 1);
+      setPredictionPercent(normalized);
+      setModelOutputError(null);
+    } catch (parseError) {
+      console.error(parseError);
+      setPredictionPercent(null);
+      setModelOutputError("Invalid JSON. Please paste the model output JSON.");
+    }
+  }, [modelOutputText]);
+
+  useEffect(() => {
+    setCopyStatus("idle");
+  }, [selectedRow]);
+
+  const modelInputJson = useMemo(() => {
+    if (!selectedRow) {
+      return "";
+    }
+    return JSON.stringify(buildModelPayload(selectedRow), null, 2);
+  }, [selectedRow]);
+
+  const heatmapPoints = useMemo<HeatmapPoint[]>(() => {
+    if (!rows || rows.length === 0) {
+      return [];
+    }
+
+    const sensorTotals = new Map<
+      string,
+      {
+        latitude: number;
+        longitude: number;
+        sensorName: string;
+        total: number;
+        fireActivations: number;
+      }
+    >();
+
+    for (const row of rows) {
+      const key = row.sensor_id;
+      const existing =
+        sensorTotals.get(key) ??
+        {
+          latitude: row.latitude,
+          longitude: row.longitude,
+          sensorName: row.sensor_name,
+          total: 0,
+          fireActivations: 0,
+        };
+
+      existing.total += 1;
+
+      const isActive =
+        typeof row.fire_event_active === "string" &&
+        row.fire_event_active.trim().toLowerCase() === "yes";
+
+      if (isActive) {
+        existing.fireActivations += 1;
+      }
+
+      sensorTotals.set(key, existing);
+    }
+
+    return Array.from(sensorTotals.values()).map((entry) => ({
+      latitude: entry.latitude,
+      longitude: entry.longitude,
+      sensorName: entry.sensorName,
+      totalReadings: entry.total,
+      fireActivations: entry.fireActivations,
+      intensity:
+        entry.total === 0 ? 0 : Math.min(entry.fireActivations / entry.total, 1),
+    }));
+  }, [rows]);
+
+  const handleToggleMetric = (metric: HourlyMetricKey) => {
+    setSelectedMetrics((current) => {
+      if (current.includes(metric)) {
+        return current.filter((key) => key !== metric);
+      }
+      return [...current, metric];
+    });
+  };
+
+  const handleSelectRow = (row: AirQualityRecord) => {
+    setSelectedRow(row);
+  };
+
+  const handleCopyInput = async () => {
+    if (!selectedRow) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(modelInputJson);
+      setCopyStatus("success");
+    } catch (clipboardError) {
+      console.error(clipboardError);
+      setCopyStatus("error");
+    }
+  };
+
+  const isMetricSelected = (metric: HourlyMetricKey) =>
+    selectedMetrics.includes(metric);
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <div className="mx-auto flex max-w-7xl flex-col gap-8 px-6 py-10">
+        <header>
+          <h1 className="text-3xl font-semibold">
+            Wildfire Air Quality Dashboard
+          </h1>
+          <p className="mt-2 max-w-2xl text-sm text-slate-300">
+            Explore hourly air quality trends and build copy-ready inputs for
+            the predictive wildfire risk model.
+          </p>
+        </header>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+        <section className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/40">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium text-slate-300">
+                Select date
+              </label>
+              <select
+                className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500"
+                value={selectedDate}
+                onChange={(event) => setSelectedDate(event.target.value)}
+              >
+                <option value="" disabled>
+                  Choose a date
+                </option>
+                {availableDates.map((date) => (
+                  <option key={date} value={date}>
+                    {date}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {HOURLY_METRIC_FIELDS.map((metric) => (
+                <label
+                  key={metric.key}
+                  className="flex items-center gap-2 rounded-md border border-slate-800 bg-slate-900/80 px-3 py-2 text-xs text-slate-200"
+                >
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-slate-100 focus:ring-slate-500"
+                    checked={isMetricSelected(metric.key)}
+                    onChange={() => handleToggleMetric(metric.key)}
+                  />
+                  <span>{metric.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-6 h-80 w-full rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+            {loading ? (
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">
+                Loading hourly averages…
+              </div>
+            ) : hourlyData.length === 0 ? (
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">
+                No hourly data available for the selected date.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={hourlyData}>
+                  <CartesianGrid stroke="#1f2233" strokeDasharray="3 3" />
+                  <XAxis dataKey="label" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: "#111827", border: "none" }}
+                    labelStyle={{ color: "#f8fafc" }}
+                  />
+                  <Legend />
+                  {selectedMetrics.map((metricKey) => (
+                    <Line
+                      key={metricKey}
+                      type="monotone"
+                      dataKey={metricKey}
+                      stroke={METRIC_COLORS[metricKey]}
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+          {error ? (
+            <p className="mt-3 text-sm text-rose-400">{error}</p>
+          ) : null}
+        </section>
+
+        <section className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/40">
+          <header className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-semibold">Fire likelihood heatmap</h2>
+              <p className="mt-1 text-sm text-slate-300">
+                Visualizes sensors on campus. Color intensity reflects the share
+                of readings flagged as active fire events for the selected date.
+              </p>
+            </div>
+            <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">
+              {heatmapPoints.length} sensors
+            </span>
+          </header>
+          <div className="mt-4 h-96 w-full overflow-hidden rounded-lg border border-slate-800">
+            {heatmapPoints.length > 0 ? (
+              <FireHeatmap points={heatmapPoints} />
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">
+                Select a date with sensor readings to view the heatmap.
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-2">
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/40">
+            <header className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">Sensor readings</h2>
+                <p className="mt-1 text-sm text-slate-300">
+                  Tap a row to prepare the model input payload.
+                </p>
+              </div>
+              <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">
+                {rows.length} rows
+              </span>
+            </header>
+
+            <div className="mt-4 overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-800 text-left text-sm">
+                <thead className="bg-slate-900">
+                  <tr>
+                    {TABLE_COLUMNS.map((column) => (
+                      <th
+                        key={column.key as string}
+                        className="px-3 py-2 font-medium uppercase tracking-wide text-slate-400"
+                      >
+                        {column.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {rows.map((row) => {
+                    const isSelected = selectedRow?.timestamp === row.timestamp &&
+                      selectedRow?.sensor_id === row.sensor_id;
+                    return (
+                      <tr
+                        key={`${row.timestamp}-${row.sensor_id}`}
+                        className={`cursor-pointer transition-colors ${
+                          isSelected
+                            ? "bg-slate-800/80"
+                            : "hover:bg-slate-900"
+                        }`}
+                        onClick={() => handleSelectRow(row)}
+                      >
+                        {TABLE_COLUMNS.map((column) => {
+                          const rawValue =
+                            row[column.key as keyof AirQualityRecord];
+                          const cellValue =
+                            column.isNumeric && typeof rawValue === "number"
+                              ? formatNumber(rawValue)
+                              : rawValue ?? "—";
+
+                          return (
+                            <td
+                              key={`${row.timestamp}-${row.sensor_id}-${String(column.key)}`}
+                              className={`px-3 py-2 text-slate-200 ${
+                                column.isNumeric
+                                  ? "text-right font-mono text-xs"
+                                  : ""
+                              }`}
+                            >
+                              {cellValue as string}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-6">
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/40">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-semibold">Model input</h2>
+                  <p className="mt-1 text-sm text-slate-300">
+                    Copy this JSON into the wildfire model interface.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-md border border-slate-700 bg-slate-800 px-3 py-1 text-sm text-slate-200 transition hover:border-slate-500 hover:bg-slate-700"
+                  onClick={handleCopyInput}
+                  disabled={!selectedRow}
+                >
+                  {copyStatus === "success"
+                    ? "Copied!"
+                    : copyStatus === "error"
+                      ? "Copy failed"
+                      : "Copy JSON"}
+                </button>
+              </div>
+
+              <textarea
+                className="mt-4 h-60 w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500"
+                readOnly
+                value={
+                  selectedRow
+                    ? modelInputJson
+                    : "Select a sensor reading to generate the model input payload."
+                }
+              />
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/40">
+              <h2 className="text-xl font-semibold">Model output</h2>
+              <p className="mt-1 text-sm text-slate-300">
+                Paste the JSON response from the model to view the predicted
+                fire confidence.
+              </p>
+
+              <textarea
+                className="mt-4 h-48 w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500"
+                placeholder='{\n  "df_out": [\n    {\n      "Prediction": 0.42,\n      ...\n    }\n  ]\n}'
+                value={modelOutputText}
+                onChange={(event) => setModelOutputText(event.target.value)}
+              />
+
+              {modelOutputError ? (
+                <p className="mt-2 text-sm text-rose-400">{modelOutputError}</p>
+              ) : predictionPercent != null ? (
+                <div className="mt-3 rounded-md border border-amber-400/40 bg-amber-400/10 px-4 py-5 text-slate-100 shadow-inner shadow-amber-500/20">
+                  <p className="text-xs uppercase tracking-wide text-amber-200/80">
+                    Fire confidence
+                  </p>
+                  <p className="mt-2 text-4xl font-bold text-amber-200">
+                    {formatPercent(predictionPercent)}
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
