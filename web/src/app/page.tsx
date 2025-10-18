@@ -714,7 +714,7 @@ export default function DashboardPage() {
               />
             </div>
 
-            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/40">
+            <div className="order-first rounded-lg border border-slate-800 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/40">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <h2 className="text-xl font-semibold">Local inference</h2>
