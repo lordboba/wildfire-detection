@@ -62,6 +62,82 @@ function HeatmapLayer({ points }: HeatmapLayerProps) {
   return null;
 }
 
+function HeatmapLegend() {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map) {
+      return;
+    }
+
+    const legendControl = L.control({ position: "bottomright" });
+
+    legendControl.onAdd = () => {
+      const container = L.DomUtil.create("div", "heatmap-legend");
+      container.style.background = "rgba(15, 23, 42, 0.85)";
+      container.style.borderRadius = "0.5rem";
+      container.style.boxShadow = "0 14px 30px rgba(15, 23, 42, 0.35)";
+      container.style.color = "#f8fafc";
+      container.style.fontSize = "0.75rem";
+      container.style.lineHeight = "1.15";
+      container.style.minWidth = "160px";
+      container.style.padding = "0.75rem 0.85rem";
+
+      const title = L.DomUtil.create("div", "heatmap-legend-title", container);
+      title.textContent = "Fire likelihood";
+      title.style.fontWeight = "600";
+      title.style.marginBottom = "0.45rem";
+
+      const gradientRow = L.DomUtil.create("div", "heatmap-legend-row", container);
+      gradientRow.style.display = "flex";
+      gradientRow.style.alignItems = "center";
+      gradientRow.style.gap = "0.4rem";
+
+      const lowLabel = L.DomUtil.create("div", "heatmap-legend-low", gradientRow);
+      lowLabel.textContent = "Low";
+      lowLabel.style.fontSize = "0.7rem";
+      lowLabel.style.fontWeight = "500";
+
+      const gradientBar = L.DomUtil.create("div", "heatmap-legend-bar", gradientRow);
+      gradientBar.style.flexGrow = "1";
+      gradientBar.style.height = "10px";
+      gradientBar.style.borderRadius = "9999px";
+      gradientBar.style.background =
+        "linear-gradient(90deg, #0ea5e9 0%, #22c55e 40%, #f97316 70%, #ef4444 100%)";
+
+      const highLabel = L.DomUtil.create("div", "heatmap-legend-high", gradientRow);
+      highLabel.textContent = "High";
+      highLabel.style.fontSize = "0.7rem";
+      highLabel.style.fontWeight = "500";
+
+      const tickRow = L.DomUtil.create("div", "heatmap-legend-ticks", container);
+      tickRow.style.display = "flex";
+      tickRow.style.justifyContent = "space-between";
+      tickRow.style.marginTop = "0.4rem";
+      tickRow.style.fontSize = "0.65rem";
+      tickRow.style.opacity = "0.8";
+
+      ["0%", "25%", "50%", "75%", "100%"].forEach((labelText) => {
+        const tick = L.DomUtil.create("span", "heatmap-legend-tick", tickRow);
+        tick.textContent = labelText;
+      });
+
+      L.DomEvent.disableClickPropagation(container);
+      L.DomEvent.disableScrollPropagation(container);
+
+      return container;
+    };
+
+    legendControl.addTo(map);
+
+    return () => {
+      legendControl.remove();
+    };
+  }, [map]);
+
+  return null;
+}
+
 interface FireHeatmapProps {
   points: HeatmapPoint[];
 }
@@ -95,7 +171,12 @@ export function FireHeatmap({ points }: FireHeatmapProps) {
         attribution='&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
-      {hasPoints ? <HeatmapLayer points={points} /> : null}
+      {hasPoints ? (
+        <>
+          <HeatmapLayer points={points} />
+          <HeatmapLegend />
+        </>
+      ) : null}
       {points.map((point) => (
         <CircleMarker
           key={`${point.sensorName}-${point.latitude}-${point.longitude}`}
