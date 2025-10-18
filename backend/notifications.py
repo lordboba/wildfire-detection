@@ -42,8 +42,24 @@ def maybe_send_fire_alert(
     return False
 
   is_fire = predicted_label.strip().lower() == "yes"
-  if not is_fire or confidence < FIRE_ALERT_THRESHOLD:
+
+  if not is_fire:
+    logger.debug("Twilio alert suppressed: predicted label is not 'yes'.")
     return False
+
+  if confidence < FIRE_ALERT_THRESHOLD and confidence < 1.0:
+    logger.debug(
+      "Twilio alert suppressed: confidence %.3f below threshold %.3f.",
+      confidence,
+      FIRE_ALERT_THRESHOLD,
+    )
+    return False
+
+  logger.info(
+    "Triggering Twilio alert for fire label with confidence %.3f (threshold %.3f).",
+    confidence,
+    FIRE_ALERT_THRESHOLD,
+  )
 
   body_lines = [
     "⚠️ Wildfire Alert",
