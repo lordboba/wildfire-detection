@@ -5,3 +5,5 @@ shapely
 pyproj
 tqdm
 python-dateutil
+python-dotenv
+requests-cache
