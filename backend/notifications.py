@@ -16,6 +16,13 @@ from .config import (
 )
 
 logger = logging.getLogger("wildfire.notifications")
+if not logger.handlers:
+  handler = logging.StreamHandler()
+  formatter = logging.Formatter("[%(asctime)s] %(levelname)s %(message)s")
+  handler.setFormatter(formatter)
+  logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 
 @lru_cache(maxsize=1)
