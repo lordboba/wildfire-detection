@@ -46,7 +46,6 @@ def _build_fire_pipeline() -> Pipeline:
         LogisticRegression(
           class_weight="balanced",
           max_iter=1000,
-          multi_class="auto",
           solver="lbfgs",
         ),
       ),
@@ -63,7 +62,6 @@ def _build_alert_pipeline() -> Pipeline:
         LogisticRegression(
           class_weight="balanced",
           max_iter=1000,
-          multi_class="multinomial",
           solver="lbfgs",
         ),
       ),

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CartesianGrid,
   Legend,
@@ -42,6 +42,8 @@ const DEFAULT_METRICS: HourlyMetricKey[] = [
   "temperature_f",
 ];
 
+const PAGE_SIZE_OPTIONS = [5, 10, 50] as const;
+
 const MODEL_KEYS: HourlyMetricKey[] = HOURLY_METRIC_FIELDS.map(
   (field) => field.key,
 );
@@ -52,6 +54,15 @@ interface AirQualityApiResponse {
 }
 
 type CopyStatus = "idle" | "success" | "error";
+
+interface BackendPredictionRow {
+  fire_event_active: string;
+  fire_probability: number;
+  fire_probabilities: Record<string, number>;
+  alert_level: string;
+  alert_confidence: number;
+  alert_probabilities: Record<string, number>;
+}
 
 function buildModelPayload(row: AirQualityRecord) {
   const payloadRecord: Record<string, number> = {};
@@ -112,6 +123,13 @@ export default function DashboardPage() {
   const [predictionPercent, setPredictionPercent] = useState<number | null>(
     null,
   );
+  const [apiPrediction, setApiPrediction] = useState<BackendPredictionRow | null>(null);
+  const [apiPredictionError, setApiPredictionError] = useState<string | null>(null);
+  const [apiPredictionLoading, setApiPredictionLoading] = useState(false);
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(
+    PAGE_SIZE_OPTIONS[1],
+  );
+  const [currentPage, setCurrentPage] = useState(0);
 
   useEffect(() => {
     let isMounted = true;
@@ -249,7 +267,21 @@ export default function DashboardPage() {
 
   useEffect(() => {
     setCopyStatus("idle");
+    setApiPrediction(null);
+    setApiPredictionError(null);
   }, [selectedRow]);
+
+  useEffect(() => {
+    setCurrentPage(0);
+  }, [selectedDate, pageSize]);
+
+  useEffect(() => {
+    const maxPage = Math.max(
+      0,
+      Math.ceil(rows.length / pageSize) - 1,
+    );
+    setCurrentPage((existing) => Math.min(existing, maxPage));
+  }, [rows, pageSize]);
 
   const modelInputJson = useMemo(() => {
     if (!selectedRow) {
@@ -310,6 +342,26 @@ export default function DashboardPage() {
     }));
   }, [rows]);
 
+  const fireProbabilityEntries = useMemo(() => {
+    if (!apiPrediction) {
+      return [];
+    }
+
+    return Object.entries(apiPrediction.fire_probabilities).sort(
+      (a, b) => b[1] - a[1],
+    );
+  }, [apiPrediction]);
+
+  const alertProbabilityEntries = useMemo(() => {
+    if (!apiPrediction) {
+      return [];
+    }
+
+    return Object.entries(apiPrediction.alert_probabilities).sort(
+      (a, b) => b[1] - a[1],
+    );
+  }, [apiPrediction]);
+
   const handleToggleMetric = (metric: HourlyMetricKey) => {
     setSelectedMetrics((current) => {
       if (current.includes(metric)) {
@@ -339,6 +391,60 @@ export default function DashboardPage() {
 
   const isMetricSelected = (metric: HourlyMetricKey) =>
     selectedMetrics.includes(metric);
+
+  const requestBackendPrediction = useCallback(async () => {
+    if (!selectedRow) {
+      return;
+    }
+
+    const backendBase =
+      process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+
+    const payload = buildModelPayload(selectedRow);
+
+    try {
+      setApiPredictionLoading(true);
+      setApiPredictionError(null);
+
+      const response = await fetch(`${backendBase}/predict`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(
+          `Backend responded with status ${response.status}: ${response.statusText}`,
+        );
+      }
+
+      const data = (await response.json()) as { df_out?: BackendPredictionRow[] };
+      const firstRow = data.df_out?.[0];
+
+      if (!firstRow) {
+        throw new Error("Backend response did not include any predictions.");
+      }
+
+      setApiPrediction(firstRow);
+    } catch (err) {
+      console.error(err);
+      setApiPrediction(null);
+      setApiPredictionError(
+        err instanceof Error ? err.message : "Failed to query backend model.",
+      );
+    } finally {
+      setApiPredictionLoading(false);
+    }
+  }, [selectedRow]);
+
+  const totalPages = rows.length === 0 ? 1 : Math.ceil(rows.length / pageSize);
+
+  const pagedRows = useMemo(() => {
+    const startIndex = currentPage * pageSize;
+    return rows.slice(startIndex, startIndex + pageSize);
+  }, [rows, currentPage, pageSize]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -458,20 +564,67 @@ export default function DashboardPage() {
 
         <section className="grid gap-6 lg:grid-cols-2">
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/40">
-            <header className="flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-semibold">Sensor readings</h2>
-                <p className="mt-1 text-sm text-slate-300">
-                  Tap a row to prepare the model input payload.
-                </p>
-              </div>
-              <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">
-                {rows.length} rows
-              </span>
-            </header>
+          <header className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Sensor readings</h2>
+              <p className="mt-1 text-sm text-slate-300">
+                Tap a row to prepare the model input payload.
+              </p>
+            </div>
+            <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">
+              {rows.length} rows
+            </span>
+          </header>
 
-            <div className="mt-4 overflow-x-auto">
-              <table className="min-w-full divide-y divide-slate-800 text-left text-sm">
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2 text-xs text-slate-300">
+              <span>Rows per page</span>
+              <select
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500"
+                value={pageSize}
+                onChange={(event) =>
+                  setPageSize(
+                    Number(event.target.value) as (typeof PAGE_SIZE_OPTIONS)[number],
+                  )
+                }
+              >
+                {PAGE_SIZE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300">
+              <span>
+                Page {Math.min(currentPage + 1, totalPages)} of {totalPages}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 transition hover:border-slate-500 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => setCurrentPage((page) => Math.max(page - 1, 0))}
+                  disabled={currentPage === 0}
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 transition hover:border-slate-500 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() =>
+                    setCurrentPage((page) => Math.min(page + 1, totalPages - 1))
+                  }
+                  disabled={currentPage >= totalPages - 1}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-800 text-left text-sm">
                 <thead className="bg-slate-900">
                   <tr>
                     {TABLE_COLUMNS.map((column) => (
@@ -485,7 +638,7 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
-                  {rows.map((row) => {
+                  {pagedRows.map((row) => {
                     const isSelected = selectedRow?.timestamp === row.timestamp &&
                       selectedRow?.sensor_id === row.sensor_id;
                     return (
@@ -559,6 +712,70 @@ export default function DashboardPage() {
                     : "Select a sensor reading to generate the model input payload."
                 }
               />
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/40">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-semibold">Local inference</h2>
+                  <p className="mt-1 text-sm text-slate-300">
+                    Query the FastAPI model (default: http://localhost:8000/predict) for this row.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-sm text-emerald-200 transition hover:border-emerald-400 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={requestBackendPrediction}
+                  disabled={!selectedRow || apiPredictionLoading}
+                >
+                  {apiPredictionLoading ? "Requesting…" : "Query model"}
+                </button>
+              </div>
+
+              {apiPredictionError ? (
+                <p className="mt-3 text-sm text-rose-400">{apiPredictionError}</p>
+              ) : apiPrediction ? (
+                <div className="mt-4 space-y-4 text-sm text-slate-200">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-slate-400">Fire activity</p>
+                    <p className="mt-1 text-lg font-semibold capitalize">
+                      {apiPrediction.fire_event_active}
+                    </p>
+                    <p className="font-mono text-xs text-amber-200/90">
+                      Confidence {formatPercent(apiPrediction.fire_probability)}
+                    </p>
+                    <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                      {fireProbabilityEntries.map(([label, probability]) => (
+                        <li key={`fire-${label}`} className="flex justify-between border-b border-slate-800/60 pb-1">
+                          <span className="capitalize">{label}</span>
+                          <span className="font-mono text-amber-200/90">{formatPercent(probability)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-slate-400">Alert level</p>
+                    <p className="mt-1 text-lg font-semibold capitalize">
+                      {apiPrediction.alert_level.replace("_", " ")}
+                    </p>
+                    <p className="font-mono text-xs text-sky-200/90">
+                      Confidence {formatPercent(apiPrediction.alert_confidence)}
+                    </p>
+                    <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                      {alertProbabilityEntries.map(([label, probability]) => (
+                        <li key={`alert-${label}`} className="flex justify-between border-b border-slate-800/60 pb-1">
+                          <span className="capitalize">{label.replace("_", " ")}</span>
+                          <span className="font-mono text-sky-200/90">{formatPercent(probability)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-slate-400">
+                  Select a row and click “Query model” to see predictions from the local API.
+                </p>
+              )}
             </div>
 
             <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/40">

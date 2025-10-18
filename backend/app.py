@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from .models.predictor import get_alert_classifier, get_fire_classifier
 from .schemas import (
@@ -16,6 +17,13 @@ app = FastAPI(
   description=(
     "Predicts fire activity and air quality alert level using campus sensor readings."
   ),
+)
+
+app.add_middleware(
+  CORSMiddleware,
+  allow_origins=["http://localhost:3000", "https://localhost:3000"],
+  allow_methods=["*"],
+  allow_headers=["*"],
 )
 
 
