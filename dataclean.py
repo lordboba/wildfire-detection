@@ -9,7 +9,7 @@ smoke_to_float = {
     "heavy": 1.0,
 }
 
-df["status"] = (
+df["fire_event_active"] = (
     df["status"]
     .str.lower()
     .map(smoke_to_float)
