@@ -10,6 +10,7 @@ from .schemas import (
   PredictionRow,
   SensorFeatures,
 )
+from .notifications import maybe_send_fire_alert
 
 app = FastAPI(
   title="Wildfire Predictor API",
@@ -43,7 +44,7 @@ def _predict_row(features: SensorFeatures) -> PredictionRow:
   fire_result = get_fire_classifier().predict(feature_map)
   alert_result = get_alert_classifier().predict(feature_map)
 
-  return PredictionRow(
+  prediction = PredictionRow(
     fire_event_active=fire_result.label,
     fire_probability=fire_result.confidence,
     fire_probabilities=fire_result.probabilities,
@@ -51,6 +52,14 @@ def _predict_row(features: SensorFeatures) -> PredictionRow:
     alert_confidence=alert_result.confidence,
     alert_probabilities=alert_result.probabilities,
   )
+
+  maybe_send_fire_alert(
+    predicted_label=prediction.fire_event_active,
+    confidence=prediction.fire_probability,
+    features=feature_map,
+  )
+
+  return prediction
 
 
 @app.post("/predict", response_model=BatchPredictionResponse)
